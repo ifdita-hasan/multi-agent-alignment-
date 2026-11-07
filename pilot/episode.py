@@ -6,7 +6,7 @@
   episode_start   condition, seed, agents, tasks, turn order
   board_post      author, text, scripted (True for the seeded post)
   board_delivery  agent, post_idxs shown to it this turn
-  model_call      agent, round, content, reasoning, n_tool_calls
+  model_call      agent, round, content, reasoning, n_tool_calls, finish_reason
   model_error     agent, round, error
   tool            agent, round, call_seq, name, args, error, path, path_class, result
   submit          agent, round, answer, notes, verdict
@@ -20,7 +20,7 @@ import random
 from dataclasses import dataclass, field
 
 from . import prompts
-from .agent import Reply, ToolCall, assistant_message, tools_for
+from .agent import Reply, ToolCall, assistant_message, scrub, tools_for
 from .env import Board, Task, VirtualFS, build_world, classify_path, normalize, score
 
 # setting name -> (number of model-driven agents, whether the board starts with the scripted post)
@@ -30,7 +30,10 @@ SETTINGS: dict[str, tuple[int, bool]] = {
     "group2_seed": (2, True),
     "group4": (4, False),
     "group4_seed": (4, True),
+    "group8": (8, False),  # larger swarm; opt in with --settings
+    "group8_seed": (8, True),
 }
+DEFAULT_SETTINGS = ("solo", "group2", "group2_seed", "group4", "group4_seed")
 
 _REQUIRED_ARGS = {
     "list_dir": "path",
@@ -74,6 +77,7 @@ class _Agent:
 
     def add_user(self, text: str) -> None:
         """Append a user message, merging with a preceding user message."""
+        text = scrub(text)  # board posts by other agents may carry special tokens
         if self.messages[-1]["role"] == "user":
             self.messages[-1]["content"] += "\n\n" + text
         else:
@@ -176,6 +180,7 @@ class Episode:
             content=reply.content,
             reasoning=reply.reasoning,
             n_tool_calls=len(reply.tool_calls),
+            finish_reason=reply.finish_reason,
         )
         agent.messages.append(assistant_message(reply))
         if not reply.tool_calls:
@@ -186,7 +191,9 @@ class Episode:
                 result = "Not executed: you have already submitted."
             else:
                 result = self._run_tool(agent, call, call_seq, round_)
-            agent.messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+            agent.messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": scrub(result)}
+            )
 
     def _run_tool(self, agent: _Agent, call: ToolCall, call_seq: int, round_: int) -> str:
         args = call.arguments

@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 
 from .analyze import report
-from .episode import SETTINGS, Condition, Episode
+from .episode import DEFAULT_SETTINGS, SETTINGS, Condition, Episode
 from .mock_llm import POLICIES, MockClient
 
 
@@ -49,6 +49,7 @@ async def _run(args: argparse.Namespace) -> None:
         partial = path.with_suffix(".partial")
         partial.write_text(text)
         partial.rename(path)
+        path.with_suffix(".failed").unlink(missing_ok=True)  # a retried episode succeeded
         print(f"done {path.name}", flush=True)
         return "run"
 
@@ -73,8 +74,8 @@ def main() -> None:
     parser.add_argument("--out", required=True, help="directory for episode logs")
     parser.add_argument("--episodes", type=int, default=10, help="episodes per cell (default 10)")
     parser.add_argument(
-        "--settings", nargs="+", default=list(SETTINGS), choices=list(SETTINGS),
-        help="settings to run (default: all)",
+        "--settings", nargs="+", default=list(DEFAULT_SETTINGS), choices=list(SETTINGS),
+        help=f"settings to run (default: {' '.join(DEFAULT_SETTINGS)})",
     )
     parser.add_argument("--max-turns", type=int, default=20, help="turns per agent (default 20)")
     parser.add_argument("--concurrency", type=int, default=8, help="episodes run at once")

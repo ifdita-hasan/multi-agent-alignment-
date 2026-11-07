@@ -1,2 +1,3 @@
+# client side; the server needs `pip install vllm==0.33.0` (see README)
 openai>=1.40
 pytest>=8

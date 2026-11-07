@@ -6,12 +6,26 @@ Configuration comes from environment variables:
   PILOT_API_KEY           default EMPTY
   PILOT_TEMPERATURE       default 1.0
   PILOT_REASONING_EFFORT  optional (low / medium / high); sent only if set
+  PILOT_MAX_TOKENS        optional cap on the tokens of one reply; sent only if set
+  PILOT_ECHO_REASONING    "1": send the model's reasoning back as `reasoning` on its
+                          own history messages (gpt-oss keeps its chain of thought
+                          across tool calls that way). Default: logged, not echoed.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
+
+_SPECIAL_TOKEN = re.compile(r"<\|[A-Za-z0-9_]+\|>")
+
+
+def scrub(text: str) -> str:
+    """Remove harmony-style special tokens such as <|end|> from text that goes
+    back to the model. gpt-oss sometimes writes them into replies and board
+    posts, and the server then rejects the whole request."""
+    return _SPECIAL_TOKEN.sub("", text)
 
 
 def _tool(name: str, description: str, properties: dict, required: list[str]) -> dict:
@@ -74,6 +88,7 @@ class Reply:
     content: str = ""
     reasoning: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    finish_reason: str = ""  # "stop", "tool_calls", "length", ... as reported by the server
 
 
 def parse_arguments(raw: str | None) -> dict | None:
@@ -85,17 +100,23 @@ def parse_arguments(raw: str | None) -> dict | None:
 
 
 def assistant_message(reply: Reply) -> dict:
-    """The reply as a chat-history message. Reasoning is logged, not echoed back."""
-    message: dict = {"role": "assistant", "content": reply.content}
+    """The reply as a chat-history message.
+
+    Reasoning is logged, not echoed back, unless PILOT_ECHO_REASONING=1: then it
+    is sent as `reasoning`, which vLLM renders into gpt-oss's analysis channel.
+    """
+    message: dict = {"role": "assistant", "content": scrub(reply.content)}
+    if reply.reasoning and os.environ.get("PILOT_ECHO_REASONING") == "1":
+        message["reasoning"] = scrub(reply.reasoning)
     if reply.tool_calls:
         message["tool_calls"] = [
             {
                 "id": call.id,
                 "type": "function",
                 "function": {
-                    "name": call.name,
+                    "name": scrub(call.name),  # a garbled parse once put <|end|> in the name
                     # servers re-parse this when rendering history, so keep it valid JSON
-                    "arguments": call.raw_arguments if call.arguments is not None else "{}",
+                    "arguments": scrub(call.raw_arguments) if call.arguments is not None else "{}",
                 },
             }
             for call in reply.tool_calls
@@ -110,6 +131,8 @@ class OpenAIClient:
         self.model = os.environ.get("PILOT_MODEL", "openai/gpt-oss-20b")
         self.temperature = float(os.environ.get("PILOT_TEMPERATURE", "1.0"))
         self.reasoning_effort = os.environ.get("PILOT_REASONING_EFFORT")
+        max_tokens = os.environ.get("PILOT_MAX_TOKENS")
+        self.max_tokens = int(max_tokens) if max_tokens else None
         self.client = AsyncOpenAI(
             base_url=os.environ.get("PILOT_BASE_URL", "http://localhost:8000/v1"),
             api_key=os.environ.get("PILOT_API_KEY", "EMPTY"),
@@ -123,11 +146,15 @@ class OpenAIClient:
         }
         if tools:
             kwargs["tools"] = tools
+        if self.max_tokens:
+            kwargs["max_tokens"] = self.max_tokens
         if self.reasoning_effort:
-            kwargs["reasoning_effort"] = self.reasoning_effort
+            # in the JSON body directly, so it does not depend on the SDK version
+            kwargs["extra_body"] = {"reasoning_effort": self.reasoning_effort}
         response = await self.client.chat.completions.create(**kwargs)
-        message = response.choices[0].message
-        extra = message.model_extra or {}
+        choice = response.choices[0]
+        message = choice.message
+        raw = message.model_dump()  # includes fields the server adds, such as `reasoning`
         calls = [
             ToolCall(
                 id=call.id or f"call_{i}",
@@ -140,6 +167,7 @@ class OpenAIClient:
         return Reply(
             content=message.content or "",
             # the field name differs between servers and versions
-            reasoning=extra.get("reasoning_content") or extra.get("reasoning") or "",
+            reasoning=raw.get("reasoning_content") or raw.get("reasoning") or "",
             tool_calls=calls,
+            finish_reason=choice.finish_reason or "",
         )
