@@ -42,16 +42,16 @@ The client talks to any OpenAI-compatible chat endpoint. Settings are environmen
 ### Environment (once)
 
 ```
-source /iliad/u/ifdita/miniconda3/etc/profile.d/conda.sh
+source /miniconda3/etc/profile.d/conda.sh
 conda create -y -n multiagent python=3.12
 conda activate multiagent
 pip install vllm==0.33.0 -r requirements.txt
-export HF_HOME=/iliad/u/ifdita/hf_cache
+export HF_HOME="path to cache"
 hf download openai/gpt-oss-20b --exclude "original/*" "metal/*"   # ~13 GB; the server then runs offline
 mkdir -p $HF_HOME/tiktoken && curl -fsSL -o $HF_HOME/tiktoken/o200k_base.tiktoken \
     https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken   # gpt-oss tokenizer, fetched on first use otherwise
 python -m pytest tests/
-scripts/pack_env.sh          # one tarball of the env in /iliad2/u/ifdita/envs; re-run after any pip install
+scripts/pack_env.sh    
 ```
 
 Compute jobs never import the env from NFS: it is ~94k small files, and a cold compute node took hours to import it (torch alone 11 min). `scripts/stage_env.sh` extracts the tarball and copies the weights to the node's local disk at job start (a few minutes), with every cache local too.
